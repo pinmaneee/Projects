@@ -1,0 +1,504 @@
+---
+title: "Telecom Customers Churn Analysis"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+
+---
+
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(rmarkdown)
+library(knitr)
+library(Hmisc)
+library(DT)
+library(arsenal)
+library(caret)
+library(e1071)
+library(data.table)
+library(ggplot2)
+library(kernlab)
+library(corrplot)
+library(cowplot)
+library(car)
+library(dplyr)
+library(plyr)
+library(ROSE)
+library(ROCR)
+library(gridExtra)
+library(gridGraphics)
+library(grid)
+
+set.seed(1)
+assignInNamespace("cedta.override", c(data.table:::cedta.override,"rmarkdown"), "data.table")
+
+
+opts_chunk$set(echo = FALSE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=55), tidy = TRUE)
+
+```
+
+
+```{r read_data, include=FALSE}
+#setwd("C:/Users/xujin/Desktop/5243 Data Science/final")
+#churn <- fread(input = "Churn.csv", verbose = FALSE)
+churn <- fread(input = "WA_Fn-UseC_-Telco-Customer-Churn.csv", verbose = FALSE)
+# change the class of columns from char to factor
+changeCols <- colnames(churn)[which(as.vector(churn[,lapply(.SD, class)]) == "character")]
+churn[,(changeCols):= lapply(.SD, as.factor), .SDcols = changeCols]
+# convert SeniorCitizen as a binary class with two levels 'yes' and 'no'
+churn[,SeniorCitizen:=factor(SeniorCitizen, levels=c(0,1), labels=c("No", "Yes"))]
+# delete missing records
+# omit rows where 'x' has a missing value
+churn <- na.omit(churn, cols="TotalCharges")
+# remove CustomerId featuren column from the dataset
+churn <- churn[,2:21]
+```
+
+
+```{r constants}
+id.name <- "id"
+gender.name <- "gender"
+SeniorCitizen.name <- "SeniorCitizen"
+Partner.name <- "Partner"
+tenure.name <- "tenure"
+PhoneService.name <- "PhoneService"
+MultipleLines.name <- "MultipleLines"
+InternetService.name <- "InternetService"
+OnlineSecurity.name <- "OnlineSecurity"
+OnlineBackup.name <- "OnlineBackup"
+DeviceProtection.name <- "DeviceProtection"
+TechSupport.name <- "TechSupport"
+StreamingTV.name <- "StreamingTV"
+StreamingMovies.name <- "StreamingMovies"
+Contract.name <- "Contract"
+PaperlessBilling.name <- "PaperlessBilling"
+PaymentMethod.name <- "PaymentMethod"
+MonthlyCharges.name <- "MonthlyCharges"
+TotalCharges.name <- "TotalCharges"
+Churn.name <- "Churn"
+
+col.names <- names(churn)
+plot.type <- c("fill","dodge","stack")
+plot.type.name <- c("proportion","count","stack-count")
+
+gender.choice <- unique(churn$gender)
+seniorcitizen.choice <- unique(churn$SeniorCitizen)
+partner.choice <- unique(churn$Partner)
+Dependents.choice <- unique(churn$Dependents)
+MultipleLines.choice <- unique(churn$MultipleLines)
+InternetService.choice <- unique(churn$InternetService)
+OnlineSecurity.choice <- unique(churn$OnlineSecurity)
+OnlineBackup.choice <- unique(churn$OnlineBackup)
+DeviceProtection.choice <- unique(churn$DeviceProtection)
+TechSupport.choice <- unique(churn$TechSupport)
+StreamingTV.choice <- unique(churn$StreamingTV)
+StreamingMovies.choice <- unique(churn$StreamingMovies)
+Contract.choice <- unique(churn$Contract)
+PaperlessBilling.choice <- unique(churn$PaperlessBilling)
+PaymentMethod.choice <- unique(churn$PaymentMethod)
+tenure.max <- max(churn$tenure)
+tenure.min <- min(churn$tenure)
+
+
+```
+
+
+
+```{r functions}
+percentage.table <- function(x, digits){
+  tab <- table(x)
+  percentage.tab <- 100*tab/(sum(tab))
+  rounded.tab <- round(x = percentage.tab, digits = digits)
+  return(rounded.tab)
+}
+
+round.numerics <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+mean.diff <- function(x, y){
+  return(mean(x, na.rm=TRUE) - mean(y, na.rm=TRUE))
+}
+
+```
+
+
+Introduction
+=====================================  
+
+
+**Churn** happens when a customer stop doing business with a company. Telecommunications industry is one of the industries that particularly interested in the churn rate since customers usually have a relatively long contract with the companies and the customers have multiple choices. 
+
+The raw data contains **`r churn[, .N]`** rows (customers) and **`r dim(churn)[2]`** columns (features). The “Churn” column is our target.  Most of our data are categorical like Churn, Gender, Dependents, Multiple Lines, Internet Service, Contract, Payment Method, etc. And the numerical data are like Tenure, Monthly Charges, Total Charges.
+
+Five Tabs are provided in this dashboard:  
+- **Introduction**: brief overview and functional descriptions   
+- **Distribution**: display distributions for each feature in the dataset; barchart for categorical variables, and histogram for continuous variables  
+- **Correlation**: display relationship between two features; barchart for two categorical variables, boxplot for categorical vs. continuous variable, and scatterplot for two continuous variables  
+- **Churn**: compare the levels for each feature based on target "Churn"  
+- **Prediction**: inputs the customer's information to help you predict whether the customer will churn or not  
+
+Click on the tabs to see different reports.
+
+
+Distribution
+===================================
+
+Row {data-height=500}
+-------------------------------------
+
+```{r dist_input}
+
+sidebarLayout(
+  sidebarPanel(
+    width = 3,
+    # selection list for single or multiple items selection
+    selectInput(inputId="dist_var", label = "Select the Variable:", choices = col.names[1:20], selected = col.names[6]),
+     # checkbox for percentage display
+    checkboxInput(inputId = "show_percentages", label = "Show Percentages", value = TRUE),
+     # numeric input control for decimal points
+     numericInput(inputId = "percentage_digits", label = "Percentage Digits(0-6)", value = 1, min = 0, max = 6, step =1)
+    
+   ),
+  
+  mainPanel(
+    width= 9,
+     #caption
+      h2(textOutput(outputId="distCaption")),
+     #barchart
+      plotOutput(outputId="distPlot")
+    
+  )
+)
+
+
+```
+
+
+```{r dist_output}
+
+#caption output
+output$distCaption <- renderText({
+  paste0("Distribution of ",input$dist_var)
+  })
+
+# chart output
+output$distPlot<-renderPlot({
+   # get the class for selected features
+  var_class <- churn[,class(get(input$dist_var))]
+  if (var_class=="factor"){
+    
+   tab <- percentage.table(x = churn[, get(input$dist_var)], input$percentage_digits)
+   table<-as.data.table(tab)
+    # barplot
+   p<-ggplot(table,aes(x=unlist(table[, 1]),y=unlist(table[,2])))+ geom_bar(stat="identity",color="black",fill="lightblue")+ 
+     labs(title= eval(input$dist_var), x="",y="percentage(%)") 
+   
+   # checkbox for percentage display
+    if(input$show_percentages == TRUE){
+      p+geom_text(aes(label=paste0(unlist(table[,2]),"%"),y=unlist(table[,2])+2.0), size=4)
+    }else{
+      p
+    }
+  }
+  
+  
+  else{
+     q<-ggplot(churn, aes(x=churn[,get(input$dist_var)])) + geom_histogram(aes(y=(..count..)/churn[,.N]*100),bins=10,position='dodge',color="black",fill="lightblue") +labs(title= eval(input$dist_var), x="", y="percentage(%)") 
+    # checkbox for percentage display
+    if(input$show_percentages == TRUE){
+      q+stat_bin(aes(y=(..count..)/churn[,.N]*100, label=paste0(round((..count..)/churn[,.N]*100,input$percentage_digits),"%")), geom="text", size=4 ,bins=10, vjust=-0.75)
+    }else{
+      q
+    }
+   
+  }
+  
+ 
+ })
+
+
+
+```
+
+
+Correlation
+===================================
+
+
+Row {data-height=500}
+-------------------------------------
+
+```{r correlation_input}
+
+sidebarLayout(
+  sidebarPanel(
+    width = 3,
+    # selection list for single or multiple items selection
+    selectInput(inputId="variable1", label = "Select 1st Variable:", choices = col.names, selected = col.names[6]),
+    selectInput(inputId="variable2", label = "Select 2nd Variable:", choices = col.names, selected = col.names[9])),
+   
+  
+  mainPanel(
+    width= 9,
+     #caption
+      h2(textOutput(outputId="corrCaption")),
+      span(textOutput("helpInfo"), style="color:gray"),
+     #barchart
+      plotOutput(outputId="corrPlot")
+    
+  )
+)
+
+
+```
+
+
+```{r correlation_output}
+
+#caption output
+output$corrCaption <- renderText({
+  paste0(input$variable2, " vs. ",input$variable1)
+  })
+
+# chart output
+output$corrPlot<-renderPlot({
+  # get the class for selected features
+  first_var_class <- churn[,class(get(input$variable1))]
+  second_var_class <- churn[,class(get(input$variable2))]
+  ## factor vs factor: bar chart
+  if (first_var_class=='factor' & second_var_class=='factor'){
+    #ggplot(churn, aes(churn[,get(input$variable1)],fill=get(input$variable2)))+geom_bar(position='fill') + labs(fill=eval(input$variable2), title= eval(input$variable1)) +xlab("") 
+    
+    ggplot(churn, aes(x= churn[,get(input$variable1)],  group=get(input$variable2))) + 
+    geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count") +
+    geom_text(aes( label = scales::percent(..prop..),
+                   y= ..prop.. ), stat= "count", vjust = -.5) +
+    labs(x = eval(input$variable1),y="percentage",fill=eval(input$variable2), title=eval(input$variable2) ) +
+  scale_y_continuous(labels = scales::percent)+facet_grid(~get(input$variable2))+
+  theme(legend.title = element_blank(),legend.position = "none",axis.text.x = element_text(angle=30,hjust=1)) 
+    
+    
+  }
+  ## numeric vs factor: histogram
+  else if(first_var_class!='factor' & second_var_class=='factor'){
+     #ggplot(churn, aes(churn[,get(input$variable1)],fill=churn[,get(input$variable2)]))+geom_histogram(alpha=0.8,bins=20,position='dodge') + labs(fill=eval(input$variable2), title = eval(input$variable1), x="") 
+    ggplot(data=churn, aes( x=churn[,get(input$variable2)], y = churn[,get(input$variable1)], fill = get(input$variable2))) + geom_boxplot() + labs(fill=eval(input$variable2), y=eval(input$variable1), x=eval(input$variable2)) + theme(axis.text.x=element_text(angle=30,hjust=1))
+  }
+  ## factor vs numeric : histogram
+  else if (first_var_class=='factor' & second_var_class!='factor'){
+    #ggplot(churn, aes(churn[,get(input$variable2)],fill=churn[,get(input$variable1)])) + geom_histogram(alpha=0.8,bins=20,position='dodge') + labs(fill=eval(input$variable1), title= eval(input$variable1), x="") 
+    
+    ggplot(data=churn, aes( x=churn[,get(input$variable1)], y = churn[,get(input$variable2)], fill = get(input$variable1))) + geom_boxplot() + labs(fill=eval(input$variable1), y=eval(input$variable2), x=eval(input$variable1)) + theme(axis.text.x=element_text(angle=30,hjust=1)) + coord_flip()
+  }
+  ## numeric vs numeric: scatter plot
+  else{
+    
+     ggplot(data=churn, aes( x=churn[,get(input$variable2)], y = churn[,get(input$variable1)], color=2)) + geom_point() + labs(color="",y=eval(input$variable1), x=eval(input$variable2)) + theme(legend.position="none")
+  }
+  
+
+})
+#caption output
+output$helpInfo <- renderText({
+  # get the class for selected features
+  first_var_class <- churn[,class(get(input$variable1))]
+  second_var_class <- churn[,class(get(input$variable2))]
+   ## factor vs factor: bar chart
+  if (first_var_class=='factor' & second_var_class=='factor'){
+    paste0("Use Barchart for categorical vs categorical.")
+  }else if(first_var_class!='factor' & second_var_class=='factor'){
+    paste0("Use Boxplot for numerical vs categorical.")
+  }else if (first_var_class=='factor' & second_var_class!='factor'){
+   paste0("Use Boxplot for categorical vs. numerical.")
+  }else{
+  paste0("Use ScatterPlot for numerical vs. numerical.")
+  }
+  
+ })
+
+```
+
+
+
+
+Churn
+===================================
+
+Row {data-height=500}
+-------------------------------------
+
+```{r churn_input}
+
+sidebarLayout(
+  sidebarPanel(
+    width = 3,
+    # selection list for single or multiple items selection
+    selectInput(inputId="churn_var", label = "Select the Variable:", choices = col.names[1:19], selected = col.names[6]),
+    selectInput(inputId="plot_type", label = "Select the plot type:", choices = plot.type.name, selected = plot.type[2])
+   ),
+  
+  mainPanel(
+    width= 9,
+     #caption
+      h2(textOutput(outputId="churnCaption")),
+     #barchart
+      plotOutput(outputId="churnPlot"),
+     #caption
+      h2(textOutput(outputId="churnCaption2")),
+     #summary table
+      dataTableOutput(outputId="churnTable")
+  )
+  
+)
+
+
+```
+
+
+```{r churn_output}
+
+#caption output
+output$churnCaption <- renderText({
+  paste0("Churn vs. ",input$churn_var)
+  })
+
+# chart output
+output$churnPlot<-renderPlot({
+   # get the class for selected features
+  var_class <- churn[,class(get(input$churn_var))]
+  if (var_class=="factor"){
+     ggplot(churn, aes(churn[,get(input$churn_var)],fill=get(Churn.name)))+geom_bar(position=plot.type[which(plot.type.name==input$plot_type)]) + labs(title= eval(input$churn_var), x=eval(input$churn_var),fill=eval(Churn.name),y="") 
+    #ggplot(churn, aes(churn[,get(input$churn_var)]))+geom_bar(position=input$plot_type) + labs(title= eval(input$churn_var), x="") + facet_grid(cols = vars(Churn))
+  }
+  ## numeric: histogram
+  else {
+     ggplot(churn, aes(churn[,get(input$churn_var)],fill=get(Churn.name))) + geom_histogram(alpha=0.8,bins=20,position=plot.type[which(plot.type.name==input$plot_type)]) + labs(title= eval(input$churn_var), x=eval(input$churn_var), fill=eval(Churn.name),y="") 
+  }
+ })
+ 
+  #caption output
+output$churnCaption2 <- renderText({
+  paste0("Statistics of ",input$churn_var, " group by Churn")
+  }) 
+ 
+ 
+
+output$churnTable<-DT::renderDataTable({
+ 
+  # initial data summary
+  #tab <- as.data.frame(summary(tableby(churn[,get(input$churn_var)]~churn[,Churn])))
+  #tab <- as.data.table(tab)
+  
+   # get the class for selected features
+  var_class <- churn[,class(get(input$churn_var))]
+  if (var_class=="factor"){
+    
+     tab <- as.data.frame(summary(tableby(churn[,get(input$churn_var)]~churn[,Churn])))
+     tab <- as.data.table(tab)
+     level_name <- churn[,levels(get(input$churn_var))]
+     #tab[,1:=c(input$churn_var,level_name)]
+     tab[,1:=c("Churn","No","Yes")]
+     # Rename a column in R
+    colnames(tab)[1] <- eval(input$churn_var)
+  }else{
+     tab <- as.data.frame(summary(tableby(churn[,Churn]~churn[,get(input$churn_var)])))
+     tab <- as.data.table(tab)
+     tab[,1:=c(input$churn_var,"Mean(SD)","Range")]
+     # Rename a column in R
+    colnames(tab)[1] <- eval(Churn.name)
+   
+  }
+  
+ 
+  
+  datatable(tab,rownames = FALSE)
+  
+})
+
+```
+
+
+Prediction
+===================================
+
+Row {data-height=500}
+-------------------------------------
+
+```{r train and test}
+churn_copy=copy(churn)
+#change variables to factors
+col <-colnames(churn_copy)
+factor.col <-col [churn_copy[,lapply(X=.SD,FUN="class")]=='factor']
+
+indexes <- sample(1:nrow(churn_copy), size=0.3*nrow(churn_copy))
+
+# drop TotalCharges column
+churn_copy[,PhoneService:=NULL]
+# drop TotalCharges column
+churn_copy[,TotalCharges:=NULL]
+train <- churn_copy[-indexes,]
+```
+
+```{r svm, include=FALSE}
+train_control<- trainControl(method="cv", number=5, savePredictions = TRUE)
+
+# train the model 
+svm.mod.radial.cv <- train(Churn~., data=train, trControl=train_control, method="svmRadial")
+```
+
+
+```{r xgboost_input}
+inputPanel(
+  selectInput(inputId = "gender", label = "Enter gender:", 
+              choices = gender.choice, selected = gender.choice[1]),
+  selectInput(inputId = "senior_citizen", label = "Whether is senior citizen:", 
+              choices = seniorcitizen.choice, selected = seniorcitizen.choice[1]),
+  selectInput(inputId = "partner", label = "Enter partner:", 
+              choices = partner.choice, selected = partner.choice[1]),
+  selectInput(inputId = "dependents", label = "Whether has dependents:", 
+              choices = Dependents.choice, selected = Dependents.choice[1]),
+  sliderInput(inputId = "tenure", label = "Enter tenure length", min = tenure.min, max = tenure.max, value = 1, step =
+1),
+  selectInput(inputId = "MultipleLines", label = "Whether has multiple lines:", choices = MultipleLines.choice, selected = MultipleLines.choice[1]),
+  selectInput(inputId = "InternetService", label = "select internet service:", 
+              choices = InternetService.choice, selected = InternetService.choice[1]),
+  selectInput(inputId = "OnlineSecurity", label = "If you have internet service, select online security", 
+              choices = OnlineSecurity.choice, selected = OnlineSecurity.choice[1]),
+  selectInput(inputId = "OnlineBackup", label = "If you have internet service, select online backup:", 
+              choices = OnlineBackup.choice, selected = OnlineBackup.choice[1]),
+  selectInput(inputId = "DeviceProtection", label = "Enter deviceProtection:", 
+              choices = DeviceProtection.choice, selected = DeviceProtection.choice[1]),
+  selectInput(inputId = "TechSupport", label = "If you have internet service, select tech support:", 
+              choices = TechSupport.choice, selected = TechSupport.choice[1]),
+  selectInput(inputId = "StreamingTV", label = "If you have internet service, select streamingTV:", 
+              choices = StreamingTV.choice, selected = StreamingTV.choice[1]),
+  selectInput(inputId = "StreamingMovies", label = "If you have internet service, select streamingMovies:", 
+              choices = StreamingMovies.choice, selected = StreamingMovies.choice[1]),
+  selectInput(inputId = "Contract", label = "select Contract:", 
+              choices = Contract.choice, selected = Contract.choice[1]),
+  selectInput(inputId = "PaperlessBilling", label = "select Paperless Billing:", 
+              choices = PaperlessBilling.choice, selected = PaperlessBilling.choice[1]),
+  selectInput(inputId = "PaymentMethod", label = "select Payment Method:", 
+              choices = PaymentMethod.choice, selected = PaymentMethod.choice[1]),
+  textInput(inputId = "MonthlyCharges", label = "Enter Monthly Charges:",
+              value = "")
+#,
+  #textInput(inputId = "TotalCharges", label = "Enter Total Charges:",value = "")
+)
+```
+
+```{r xgboost_output}
+renderDataTable({
+  example <- data.frame(gender=input$gender, SeniorCitizen=input$senior_citizen, Dependents =(input$dependents), Partner = input$partner, tenure =as.numeric(input$tenure), MultipleLines =(input$MultipleLines), 
+InternetService =(input$InternetService), OnlineSecurity =(input$OnlineSecurity),OnlineBackup =(input$OnlineBackup), DeviceProtection = input$DeviceProtection, TechSupport =(input$TechSupport), StreamingTV =(input$StreamingTV), StreamingMovies =(input$StreamingMovies), Contract =(input$Contract), PaperlessBilling =(input$PaperlessBilling), PaymentMethod =(input$PaymentMethod), MonthlyCharges =as.numeric(input$MonthlyCharges)#, #TotalCharges =as.numeric(input$TotalCharges)
+)
+  
+  pred <- data.frame(predict_churn = predict(svm.mod.radial.cv, example))
+  datatable(pred)
+})
+```
+

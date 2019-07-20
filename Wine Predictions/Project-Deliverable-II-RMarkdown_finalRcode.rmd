@@ -1,0 +1,398 @@
+---
+title: "Project Deliverable II"
+author: "Alcohol Analytics Team: Pinmanee Eowpittayakul, James Gilson, Frederic Li, Leah Reinhard, Xinyuan Zhu"
+date: "04/24/2019"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r libraries, echo=FALSE}
+library(data.table)
+library(stringr)
+library(qdap)
+library(dplyr)
+library(tidytext)
+library(tidyr)
+library(wordcloud)
+library(tm)
+library(rpart)
+library(randomForest)
+library(ggplot2)
+library(flexclust)
+library(cluster) 
+library(recommenderlab)
+library(arules)
+library(arulesViz)
+library(DT)
+```
+
+```{r read data, echo=FALSE}
+rm(list=ls())
+setwd('/Users/JamesGilson/Desktop/R WORKING DIRECTORY/Frameworks II Project')
+wine <- fread("wine_clean.csv", stringsAsFactors = T)
+```
+
+#Additional Cleaning Steps
+
+```{r additional cleaning steps}
+wine <- wine[year!='Non-vintage',] # Remove records with no age
+wine <- wine[country!="",] # Remove records with no country
+wine$id <- 1:nrow(wine)
+wine[,"X":=NULL]
+wine$description = as.character(wine$description)
+wine$designation = as.character(wine$designation)
+wine$age <- 2019 - as.numeric(as.character(wine$year))
+```
+
+#Exploratory Analysis
+```{r Exploratory Analysis}
+## Country - average price
+table(wine$country)
+a <- split(wine$price, wine$country)
+price.country <- sapply(a, mean)
+sort(price.country, decreasing = T)
+# Switzerland(point 88.5) has the highest average price(72.833333) 
+#while Ukraine(point 84.07143) has the lowest(9.214286)
+
+## Country - average point
+a <- split(wine$points, wine$country)
+points.country <- sapply(a, mean)
+sort(points.country, decreasing=T)
+summary(points.country)
+# England($52.677966) has the highest average point(91.76271)
+#while Peru(18.062500) has the lowest(83.56250)
+# The highest price and the highest point are all from west Europe
+
+## tasters - points
+table(wine$taster_name)
+b <- split(wine$points, wine$taster_name)
+tasters_points <- sapply(b, mean)
+sort(tasters_points,decreasing=T)
+summary(tasters_points)
+#the average point is 88, 
+#Alexander Peartree always gives the low points 
+#while Anne Krebiehla gives the highest
+
+## has_twitter
+c <- split(wine$price, wine$has_twitter)
+twitter <- sapply(c, mean)
+sort(twitter,decreasing=T)
+#Whether they have twitter doesn't change the result
+```
+
+#Text Mining: Exploratory Analysis
+```{r Text Mining Exploratory Analysis}
+wine$char_count <- nchar(wine$description)
+wine$word_count <- str_count(string = wine$description,pattern = '\\S+')
+wine$sentence_count <- str_count(string = wine$description,
+                                 pattern = "[A-Za-z,;'\"\\s]+[^.!?]*[.?!]")
+
+#checking correlation with points 
+cor(wine$char_count, wine$points) #0.5789716 relatively high 
+cor(wine$word_count, wine$points) #0.5346629
+cor(wine$sentence_count, wine$points) #0.3229018
+
+#adding proportion of positive sentiment in the description and adding to the dataset as variable 
+wine <- wine %>%
+  select(id, description)%>%
+  group_by(id)%>%
+  unnest_tokens(output=word,input=description)%>%
+  ungroup()%>%
+  inner_join(get_sentiments('bing'))%>%
+  group_by(id)%>%
+  summarize(positivity = sum(sentiment=='positive')/n())%>%
+  right_join(wine)
+
+# set missing positivity values to average 
+wine$positivity <- ifelse(is.na(wine$positivity), mean(wine$positivity,na.rm=T), wine$positivity)
+
+cor(wine$positivity, wine$points)  ### positivity has very small positive correlation with points -- limited usefulness
+                               
+## Visualization
+wine %>%
+  select(id,description,price)%>%
+  group_by(id)%>%
+  unnest_tokens(output=word,input=description)%>%
+  ungroup()%>%
+  inner_join(get_sentiments('bing'))%>%
+  group_by(price,sentiment)%>%
+  summarize(n = n())%>%
+  mutate(proportion = n/sum(n))%>%
+  ggplot(aes(x=price,y=proportion,fill=sentiment))+geom_col()
+
+#find most frequent terms in descriptions
+freq_terms(text.var = wine$description,top = 30,stopwords = c(Top200Words,"wine","it's"))
+plot(freq_terms(text.var = wine$description,top = 30,stopwords = c(Top200Words,"wine","it's")))
+freq.terms = as.vector(unlist(freq_terms(text.var = wine$description,top = 30,stopwords = c(Top200Words,"wine","it's"))[,1]))
+freq.terms
+
+#Bing Lexicons
+wine%>%
+  select(id,description,points,price)%>%
+  group_by(id)%>%
+  unnest_tokens(output = word, input = description)%>%
+  inner_join(get_sentiments('bing'))%>%
+  group_by(sentiment)%>%
+  summarize(n = n())%>%
+  mutate(proportion = n/sum(n)*100)
+#negative  21.84091
+#positive  78.15909	
+
+#Visualize Numbers of Positives and Negatives words sentiments per Price level 
+wine%>%
+  select(id,description,points,price)%>%
+  group_by(id)%>%
+  unnest_tokens(output = word, input = description)%>%
+  inner_join(get_sentiments('bing'))%>%
+  group_by(id,sentiment,price)%>%
+  count()%>%
+  group_by(sentiment, price)%>%
+  summarize(n = mean(n))%>%
+  ungroup()%>%
+  ggplot(aes(x=price,y=n, fill=sentiment))+
+  geom_col()+
+  facet_wrap(~sentiment)+
+  guides(fill=F)+coord_flip()
+
+```
+
+#Text Mining: Sentiment Analysis
+```{r Text Mining Sentiment Analysis }
+#Positivity using afinn
+wine <- wine %>%
+  select(id, description)%>%
+  group_by(id)%>%
+  unnest_tokens(output=word, input=description)%>%
+  inner_join(get_sentiments('afinn'))%>%
+  group_by(id)%>%
+  summarize(reviewSentiment = mean(score))%>%
+  right_join(wine)
+
+#set missing sentiment scores to average
+sum(is.na(wine$reviewSentiment)) # significantly more instances where no sentiment extracted, as compared to bing
+wine$reviewSentiment <- ifelse(is.na(wine$reviewSentiment), mean(wine$reviewSentiment, na.rm=T), wine$reviewSentiment)
+
+cor(wine$reviewSentiment, wine$points) # slightly stronger, but still weak      
+
+## affinn Lexicon in picture
+wine %>%
+  select(id,description)%>%
+  group_by(id)%>%
+  unnest_tokens(output=word,input=description)%>%
+  inner_join(get_sentiments('afinn'))%>%
+  summarize(reviewSentiment = mean(score))%>%
+  ungroup()%>%
+  ggplot(aes(x=reviewSentiment,fill=reviewSentiment>0))+
+  geom_histogram(binwidth = 0.1)+
+  scale_x_continuous(breaks=seq(-5,5,1))+scale_fill_manual(values=c('tomato','seagreen'))+
+  guides(fill=F)
+# NOT higher the score, higher the price
+#score 1 to 2 have the highest price
+
+wordcloudData2 = 
+  wine%>%
+  group_by(id)%>%
+  unnest_tokens(output=word,input=description)%>%
+  anti_join(stop_words)%>%
+  inner_join(get_sentiments('bing'))%>%
+  ungroup()%>%
+  count(sentiment,word,sort=T)%>%
+  spread(key=sentiment,value = n,fill=0)%>%
+  data.frame()
+rownames(wordcloudData2) = wordcloudData2[,'word']
+wordcloudData2 = wordcloudData2[,c('positive','negative')]
+comparison.cloud(term.matrix = wordcloudData2,scale = c(2,0.5),max.words = 200, rot.per=0)
+
+### the wordcloud nicely illustrates the issues with the lexicon applied to this data set -- words like "tough" and "dominates" are flagged as positive, while words like "complex", "dark", "complex", "intense" are flagged negatively.  In the context of wine description's, these negative words are likely being used to describe positive sentiments, while the opposite is likely true for the positively flagged words.
+
+```
+
+```{r Text Mining Predictive Analysis}
+corpus <- VCorpus(VectorSource(wine$description)) # Create corpus
+corpus <- tm_map(corpus, FUN = content_transformer(tolower)) # transform to lowercase
+corpus <- tm_map(corpus, FUN = removePunctuation) # remove punctuation
+corpus <- tm_map(corpus, FUN = removeWords, c(stopwords('english'),'wine')) # remove StopWords
+corpus <- tm_map(corpus, FUN = stripWhitespace)
+dict <- findFreqTerms(DocumentTermMatrix(Corpus(VectorSource(wine$description))), lowfreq = 0)
+dict_corpus <- VCorpus(VectorSource(dict))
+corpus <- tm_map(corpus, FUN = stemDocument)
+dtm = DocumentTermMatrix(corpus); dtm #sparsity 100% 33582 terms 
+xdtm = removeSparseTerms(dtm,sparse = 0.985) #retain items that appear at least 10% of the time
+xdtm #sparsity 80%, terms =31
+
+#browsing frequency of important words
+xdtm = as.data.frame(as.matrix(xdtm))
+colnames(xdtm) = stemCompletion(x = colnames(xdtm),dictionary = dict_corpus,type='prevalent')
+colnames(xdtm) = make.names(colnames(xdtm))
+sort(colSums(xdtm),decreasing = T)
+
+#TFIDF 
+dtm_tfidf = DocumentTermMatrix(x=corpus,control = list(weighting=function(x) weightTfIdf(x,normalize=F)))
+xdtm_tfidf = removeSparseTerms(dtm_tfidf,sparse = 0.985)
+xdtm_tfidf = as.data.frame(as.matrix(xdtm_tfidf))
+colnames(xdtm_tfidf) = stemCompletion(x = colnames(xdtm_tfidf),dictionary = dict_corpus,type='prevalent')
+colnames(xdtm_tfidf) = make.names(colnames(xdtm_tfidf))
+sort(colSums(xdtm_tfidf),decreasing = T)
+
+wine_corp <- cbind(points = wine$points, xdtm)
+wine_corp_tfidf <- cbind(points = wine$points, xdtm_tfidf)
+```
+
+```{R Prediction}
+#1. XDTM wine_corp 
+
+#Split data
+set.seed(222)
+split = sample(1:nrow(wine_corp), size = 0.7*nrow(wine_corp))
+corp_train = wine_corp[split,]
+corp_test = wine_corp[-split,]
+
+### Linear Regression
+corp_lm1 <- lm(points~.,corp_train)
+summary(corp_lm1)
+pred_lmtrain = predict(corp_lm1)
+pred_lmtest = predict(corp_lm1, newdata=corp_test)
+rmse_lm1 = sqrt(mean((pred_lmtest-corp_test$points)^2)); rmse_lm1 
+
+```
+
+```{r Adding Coordinates for Country}
+#import country coordinates
+countryCords <- read.csv('country_coords.csv')
+colnames(countryCords) <- c('country', 'longitude', 'latitude')
+
+countryCords$country <- as.character(countryCords$country)
+
+#cleaning
+countryCords$country[countryCords$country=='United States'] <- 'US'
+countryCords$country[countryCords$country=='United Kingdom'] <- 'England'
+countryCords$country[countryCords$country=='Macedonia [FYROM]'] <- 'Macedonia'
+wine <- left_join(wine, countryCords)
+
+```
+
+```{r kmeans clustering}
+# subset data to numeric variables 
+wine = as.data.table(wine)
+wine[,"V1":=NULL]
+set.seed(222)
+split = sample(1:nrow(wine), size = 0.7*nrow(wine))
+train = wine[split,]
+test = wine[-split,]
+
+trainMinusDV <-  subset(train,select=c(price, char_count, age, reviewSentiment))
+testMinusDV <- subset(test,select=c(price, char_count, age, reviewSentiment))
+
+# scale variables
+trainMinusDV <- scale(trainMinusDV)
+testMinusDV <- scale(testMinusDV)
+
+# evaluate potential clustering solutions -- ratio plot indicates 3 cluster solution
+ratio_ss = sapply(1:10,FUN = function(x) {km = kmeans(x = trainMinusDV,centers = x,iter.max = 1000,nstart = 25)
+km$betweenss/km$totss} )
+ggplot(data=data.frame(cluster = 1:10,ratio_ss),aes(x=cluster,y=ratio_ss))+
+  geom_line(col='steelblue',size=1.2)+
+  geom_point()+
+  scale_x_continuous(breaks=seq(1,10,1))
+
+# 2 cluster solution chosen
+km = kmeans(x = trainMinusDV,centers = 3,iter.max=10000,nstart=25)
+clusterTrain = km$cluster
+
+# apply cluster solution to test set
+km_kcca <- as.kcca(km,trainMinusDV)
+clusterTrain = predict(km_kcca)
+clusterTest = predict(km_kcca,newdata=testMinusDV)
+
+# Distribution of wines across clusters 
+table(clusterTrain)
+table(clusterTest) 
+```
+
+```{r add features to train}
+# Add CORPUS  predictions into original data set to use as feature in final model
+train <- cbind(train, pred_lmtrain)
+test <- cbind(test, pred_lmtest)
+
+colnames(train)[colnames(train)=='pred_lmtrain'] <- 'pred_lm' # Rename for consistency
+colnames(test)[colnames(test)=='pred_lmtest'] <- 'pred_lm' # Rename for consistency
+
+# Add clusters back to original data set as feature in final model 
+train <- cbind(train, clusterTrain)
+test <- cbind(test, clusterTest)
+train <- rename(train, cluster=clusterTrain)
+test <- rename(test, cluster=clusterTest)
+
+#evaluate train set clusters
+train %>%
+  select(reviewSentiment, char_count, age, points, price, cluster)%>%
+  group_by(cluster)%>%
+  summarize_all(function(x) round(mean(x,na.rm=T),3))%>%
+  data.frame()
+
+#evaluate test set clusters
+test %>%
+  select(reviewSentiment, char_count, age, points, price, cluster)%>%
+  group_by(cluster)%>%
+  summarize_all(function(x) round(mean(x,na.rm=T),2))%>%
+  data.frame()
+
+### Cluster 1 -- Higher priced,  higher sentiment, older wines, best rating -- (EXPENSIVE BUT GOOD WINES)
+### Cluster 2 -- Moderately priced, lowest sentiment, moderate rating -- (OVERPRICED WINES)
+### Cluster 3 -- Lowest price, high sentiment, moderate rating -- (VALUE WINES)
+```
+
+```{r Exploring Transformations for Winery}
+# create a feature to rank wineries based on the average rating of their wines
+wineryScore <- train %>%
+  group_by(winery)%>%
+  summarize(avgScore = mean(points))
+
+# scale this new feature
+wineryScore$scaledScore <- scale(wineryScore$avgScore)
+
+# calculate number of wines rated per winery
+numWinesByWinery <- train%>%
+  group_by(winery)%>%
+  count()%>%
+  ungroup()%>%
+  select(numWines = n)
+
+wineryScore <- cbind(wineryScore, numWinesByWinery)
+
+#add back in to original data frames
+train <- left_join(train, wineryScore)
+test <- left_join(test, wineryScore)
+
+#impute missing values from mean
+test$scaledScore <- ifelse(is.na(test$scaledScore), mean(test$scaledScore, na.rm=T), test$scaledScore)
+test$avgScore <- ifelse(is.na(test$avgScore), mean(test$avgScore, na.rm=T), test$avgScore)
+nrow(test[is.na(test$scaledScore),])
+
+```
+
+```{r final model}
+names(train)
+train = train[,c(-1,-5,-6,-10,-11,-16,-29)]
+test = test[,c(-1,-5,-6,-10,-11,-16,-29)]
+
+train = train[,c(-3,-9)]
+test = test[,c(-3,-9)]
+
+##Lasso 
+library(glmnet)
+x = model.matrix(points~., data=train)
+y = train$points
+lassoModel = glmnet(x,y,alpha =1)
+cv.lasso = cv.glmnet(x,y,alpha=1) # 10-fold cross-validation
+coef(cv.lasso)
+
+### Linear Regression
+final.model <- lm(points~reviewSentiment+positivity+price+taster_name+age+word_count+longitude+latitude+pred_lm+avgScore+numWines+cluster,train)
+summary(final.model)
+pred_final = predict(final.model, newdata=test)
+rmse_final = sqrt(mean((pred_final-test$points)^2,na.rm = T)); rmse_final #1.737668
+
+```

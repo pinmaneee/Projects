@@ -1,0 +1,954 @@
+---
+title: "Telcom Customers Churn Analysis"
+author: 
+ - "Group V"
+ - "Pinmanee Eowpittayakul(pe2229) | Jincheng Xu(jx2365)"
+ - "Yawen Han(yh3069) | Shangyao Liu(sl4408)"
+date: "May 9th, 2019"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE,message=FALSE)
+```
+
+```{r load_library, echo=FALSE}
+library(e1071)
+library(DT)
+library(data.table)
+library(ggplot2)
+library(kernlab)
+library(corrplot)
+library(cowplot)
+library(car)
+library(dplyr)
+library(plyr)
+library(ROSE)
+library(ROCR)
+library(gridExtra)
+library(gridGraphics)
+library(grid)
+
+set.seed(1)
+```
+
+```{r load_dataset, echo=FALSE}
+# load dataset
+#setwd("C:/Users/remed/Google Drive/Columbia/Spring 2019/STAT 4243-002 Applied Data Science/Final Project/Final Project Deliverable")
+#setwd("C:/Users/xujin/Desktop/5243 Data Science/final")
+#churn <- fread(input = "churn.csv", verbose = FALSE)
+churn <- fread(input = "WA_Fn-UseC_-Telco-Customer-Churn.csv", verbose = FALSE)
+```
+
+```{r constants, echo=FALSE}
+id.name <- "id"
+gender.name <- "gender"
+SeniorCitizen.name <- "SeniorCitizen"
+Partner.name <- "Partner"
+tenure.name <- "tenure"
+PhoneService.name <- "PhoneService"
+MultipleLines.name <- "MultipleLines"
+InternetService.name <- "InternetService"
+OnlineSecurity.name <- "OnlineSecurity"
+OnlineBackup.name <- "OnlineBackup"
+DeviceProtection.name <- "DeviceProtection"
+TechSupport.name <- "TechSupport"
+StreamingTV.name <- "StreamingTV"
+StreamingMovies.name <- "StreamingMovies"
+Contract.name <- "Contract"
+PaperlessBilling.name <- "PaperlessBilling"
+PaymentMethod.name <- "PaymentMethod"
+MonthlyCharges.name <- "MonthlyCharges"
+TotalCharges.name <- "TotalCharges"
+Churn.name <- "Churn"
+
+col.names <- names(churn)
+continuous_col.names <-c("tenure","MonthlyCharges","TotalCharges")
+
+
+```
+
+
+```{r functions, echo=FALSE}
+percentage.table <- function(x, digits){
+  tab <- table(x)
+  percentage.tab <- 100*tab/(sum(tab))
+  rounded.tab <- round(x = percentage.tab, digits = digits)
+  return(rounded.tab)
+}
+
+round.numerics <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+
+round.numerics.percent <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+    x <- paste(x,"%")
+  }
+  return(x)
+}
+
+
+mean.diff <- function(x, y){
+  return(mean(x, na.rm=TRUE) - mean(y, na.rm=TRUE))
+}
+
+factor.to.number <- function(x){
+  x <- factor(x,levels=c("No", "Yes"), labels=c(0,1))
+  return(as.numeric(x))
+}
+
+confusion.matrix.heatmap <- function(confusion_matrix,accuracy_val){
+  TrueValue <- factor(c("No", "No", "Yes", "Yes"))
+  PredictionValue <- factor(c("No", "Yes", "No", "Yes"))
+  Y <- unlist(as.data.frame(confusion_matrix))[9:12]
+  df <- data.frame(TrueValue, PredictionValue, Y)
+  ggplot(data =  df, mapping = aes(x = PredictionValue, y = TrueValue)) + geom_tile(aes(fill = Y), colour = "white") + geom_text(aes(label = sprintf("%1.0f", Y)), vjust = 1) + scale_fill_gradient(low = "lightblue", high = "red") + theme_bw() + theme(legend.position = "none") + labs(title=paste0("Confusion Matrix, accuracy= ",round(accuracy_val,2),"%"))
+ 
+}
+
+roc_plot <- function(pred){
+   roc.pred <- prediction(factor.to.number(pred),factor.to.number(testy))
+   auc <- as.numeric(performance(roc.pred,"auc")@y.values)
+   ROCRperf <- performance(roc.pred,"tpr","fpr")
+   plot(ROCRperf, main=paste0("ROC, auc=",round(auc,2)))
+   return (auc)
+ }
+
+```
+
+
+In today's highly competitive environment, there is an increasing need for companies to utilize data to understand its customer so that they can make better decisions and allocate its resources more efficiently and effectively. Many businesses rely on recurring revenue from subscribers in order to stay healthy and keep growing. However, for any subscription-based business, it's not good enough just to seek new subscribers to start new service. The companies should always try their best to retain their existing customers as well, so that they can gain the predictable flows of revenue that successful businesses enjoy. 
+
+One way to measure customer satisfaction is through the **churn**, which focuses on how many existing customers decide not to renew subscriptions and instead leave the service. This is because, no matter what companies or what industries you are in, most companies share the same goal: to minimize "churn" or the loss of customers compared to other companies. This is particularly true for service-based company, where revenue is largely based on the numbers of users the company gained and retained on its platform. 
+
+A high churn rate could adversely affect profits and impede growth. Telecommunications industry is one of the industries that particularly interested in identifying customers' churn since customers usually have a relatively long contract with companies but the industry is highly saturated and the switching cost for customers is relatively low. In this field, many of these companies compete, making it easy for people to transfer from one provider to another.
+
+
+------------------------------
+
+## 1. Introduction
+
+Our group chose a dataset originated from IBM Watson Analytics on [“Telco Customer Churn”](https://www.ibm.com/communities/analytics/watson-analytics-blog/predictive-insights-in-the-telco-customer-churn-data-set/), featuring `r dim(churn)[1]` rows of customer information with a total of `r dim(churn)[2]` features, including Churn, Gender, Dependents, Multiple Lines, Internet Service, Contract, Payment Method, Tenure, Monthly Charges, Total Charges, etc. The dataset that we have is based on information from the telecommunications industry. The **objective** of this project is to develop a well-performed model which helps telecommunications companies find out which indicators are important in predicting customer churn, so that they can have a better understanding of customers' behavior.
+
+
+In order to understand the customers who are leaving their telecommunications service, works are carried out in the discovery cycle including preliminary data exploration (explore data and verify data quality), data processing (data cleaning, missing values, feature selection), exploratory data analysis (distribution, correlation, imbalanced dataset), clustering (customer segmentation), modeling (select modeling technique, tune parameter, model evaluation, model interpretation), results analysis (model comparison, importance features), recommendations, and areas of future investigation.
+
+In addition to creating predictive modeling for the company to utilize for churn prediction, the group also created a dashboard (https://yawenhan.shinyapps.io/TelecomCustomersChurnAnalysis/) that can be utilized by the sales and marketing team to generate insights on customer behaviors at their fingertips. Our reasoning for this is supporting the sales and marketing team to be able to make quick decision that will drive the company ahead of its competitors. With the interactive dashboard, the sales and marketing team can easily explore the characteristics of customers and identify which customer segments the company should focus on and develop customer retention programs accordingly, without any prior knowledge on data science.
+
+
+By basing the decision on data, the project will help the company to solve the problem of resource misallocation. By having a tool to understand customer churn behavior, it will assist the company to invest in projects that truly impact the organization and allow the company to not only stay competitive, but to thrive ahead of its competitors. 
+
+-----------------------------------
+
+## 2. Data Dictionary
+
+The raw data contains `r dim(churn)[1]` rows (customers) and  `r dim(churn)[2]` columns (features). Each row represents a customer, each column contains customers' attributes described on the column Metadata. The **Churn** column is our target.
+
+The first row of the data set includes the column names, and each subsequent row includes one observation of values. Here is a selection of 20 lines from the dataset:
+
+```{r table_overview, echo=FALSE, comment=""}
+# first 20 rows
+datatable(data=churn[1:20,], rownames = FALSE)
+```
+
+
+
+
+The data set includes information about:  
+- **Customers who left within the last month** – this column is called Churn  
+- **Services that each customer has signed up for** – phone, multiple lines, internet, online security, online backup, device protection, tech support, and streaming TV and movies  
+- **Customer account information** – how long they’ve been a customer, contract type, payment method, paperless billing, monthly charges, and total charges  
+- **Demographic info about customers** – gender, age range, and if they have partners and dependents  
+
+
+The specific illustration for each variable is listed below:
+
+Variables                   Description                                                                   
+----------------------     ------------------------------------------------------------------------------       
+Customer ID	               Customer ID
+Gender	                   Whether the customer is a male or a female
+SeniorCitizen	             Whether the customer is a senior citizen or not 
+Partner	                   Whether the customer has a partner or not 
+Dependents                 Whether the customer has dependents or not 
+Tenure	                   Number of months the customer has stayed with the company
+PhoneService             	 Whether the customer has a phone service or not 
+MultipleLines	             Whether the customer has multiple lines or not 
+InternetService	           Customer's internet service provider
+OnlineSecurity	           Whether the customer has online security or not
+OnlineBackup	             Whether the customer has online backup or not
+DeviceProtection	         Whether the customer has device protection or not
+TechSupport	               Whether the customer has tech support or not
+StreamingTV	               Whether the customer has streaming TV or not
+StreamingMovies         	 Whether the customer has streaming movies or not
+Contract	                 The contract term of the customer
+PaperlessBilling	         Whether the customer has paperless billing or not
+PaymentMethod	             The customer's payment method
+MonthlyCharges	           The amount charged to the customer monthly
+TotalCharges	             The total amount charged to the customer
+Churn	                     Whether the customer churned or not
+----------------------     ------------------------------------------------------------------------------      
+
+----------------------------
+
+
+
+
+## 3. Preliminary Data Analysis
+
+The "Telco Customer Churn" dataset was downloaded from [IBM Watson Analytics](https://www.ibm.com/communities/analytics/watson-analytics-blog/predictive-insights-in-the-telco-customer-churn-data-set/). The data is deemed as reliable because IBM provided this dataset to the community to test with its Watson Analytics tool. Although we deem IBM to be a reputable source of data, some preliminary data analysis were also be performed to check the quality of data. To explore the representative statistics for each feature based on the target, `the tableby` function from `arsenal` package was utilized with variable **Churn** been set as the outcome .
+
+In the summary table below, the features are summarized by "churn" classes levels - No, Yes and Total. For the numerical features: "SeniorCitizen", "tenure", "MonthlyCharges", and TotalCharges", they are summarized by the mean and overall range; while for the categorical features left, such as "gender", "partner", "dependents", they are summarized by the corresponding class levels.
+
+```{r data_summary, warning=FALSE, echo=FALSE}
+library(arsenal)
+# change the class of columns from char to factor
+changeCols <- colnames(churn)[which(as.vector(churn[,lapply(.SD, class)]) == "character")]
+churn[,(changeCols):= lapply(.SD, as.factor), .SDcols = changeCols]
+# initial data summary
+table_eda <- tableby(Churn ~ ., data = churn[,2:21])
+summary(table_eda, title = "Initial Data Summary")
+#summary(churn)
+```
+
+```{r, echo=FALSE}
+#htmltools::includeHTML("summaryTable.html")
+```
+
+
+
+The summarized statistics above allowed us to find out that:      
+- **senior citizen** only has two levels - 0 and 1, should be a categorical class instead of numeric class  
+- there are 11 NA values in **total charges**  
+- **customer ID** is a unique identifier for each customer and can be removed from our dataset because it provides no information and will provide no impact in our predictive models.     
+
+Additionally, an analysis of the mean for "tenure" suggests that most customers that stick with the company tends to have a lifetime value of up to 3 years, with the maximum life time of 6 years. An analysis of the monthly charges suggests that most users who did not churn has an average monthly charge of \$61, with the highest monthly charge of \$119 and a minimum monthly charge of \$18. On the other hands, most customers who churn have phone service, uses fiber optic internet service, and of those with internet service, has no online security, online backup, device protection, and technical support. In addition, these customers tend to only have a month-to-month contract with the company. 
+
+------------------------------
+
+## 4. Initial Data Processing
+
+After preliminary data analysis, we realize that there are a few cleaning steps that we need to perform on the dataset. This section focused on the Data Processing, including Data Type Conversion, Missing Values Management, and Non-informative Features Exclusion.
+
+Our initial data cleaning step was to change all categorical variables in our dataset into a factor variable, which include **Gender**, **Partner**, **Dependents**, **PhoneService**, **InternetService**, **Contract**, **PaperlessBilling**, **PaymentMethod**, **OnlineSecurity**, **OnlineBackup**, **DeviceProtection**, **TechSupport**, **StreamingTV**, **StreamingMovies**, **MultipleLines**, and **Churn**, so that we can easily apply these variables to our machine learning models later on in the process. 
+
+### 4.1 Data Type Conversion
+
+First, we transform **SeniorCitizen** variable into a binary factor. In the summary table above, it is observed that **SeniorCitizen** is treated as a numeric variable with only 2 values - 0 or 1, indicating whether the customer is a senior citizen or not. In this case, SeniorCitizen should be a binary variable with class "factor" rather than a numeric variable.
+
+```{r senior_citizen}
+# convert SeniorCitizen as a binary class with two levels 'yes' and 'no'
+churn[,SeniorCitizen:=factor(SeniorCitizen, levels=c(0,1), labels=c("No", "Yes"))]
+datatable(churn[,.(count=.N),by=SeniorCitizen],rownames=FALSE)
+```
+
+```{r senior_citizen_check, echo=FALSE}
+# check the class of SeniorCitizen
+#summary(tableby(Churn ~ SeniorCitizen, data = churn), title = "Check SeniorCitizen")
+#summary(churn$SeniorCitizen)
+
+```
+
+After convert **SeniorCitizen** from numeric variable to categorical variable, the updated summary is shown above. It is observed that there are 1142 customers who are senior citizens.
+
+
+
+
+### 4.2 Missing Values
+
+Then, we checked in see which variables has missing values. We found out that **TotalCharges** has 11 missing values, and we removed these rows from the dataset. Our reasoning for removing instead of imputing is there are only 11 missing values, which is 0.16% of total data records. As the percenatge of missing values are typically small, we deemed that removing the missing values would not be significant to our dataset.
+
+```{r check_missing_values,echo=FALSE,eval=FALSE}
+# count missing values for each column
+na_count <- sapply(churn, function(y) sum(is.na(y)))
+# visualize the missing counts
+df.missing <- data.frame(feature=names(churn),
+                         MissingNum_Before=as.numeric(na_count))
+```
+
+
+```{r remove_missing_value_recheck}
+# count missing values for each column
+na_count <- sapply(churn, function(y) sum(is.na(y)))
+# visualize the missing counts
+df.missing <- data.frame(feature=names(churn),
+                         MissingNum_Before=as.numeric(na_count))
+# delete missing records
+# omit rows where 'x' has a missing value
+churn <- na.omit(churn, cols="TotalCharges")
+# recheck NA again
+na_count2<-sapply(churn, function(x) sum(is.na(x)))
+# visualize the missing counts
+df.missing2 <- data.frame(feature=names(churn),
+                         MissingNum_After=as.numeric(na_count2))
+df.missing.merge <- merge(df.missing,df.missing2)
+datatable(df.missing.merge[order(-df.missing.merge$MissingNum_Before),])
+```
+
+The table above compares the number of missing values before and after removing the missing values. It helps to check that there are only 11 missing values in **TotalCharges** variable, and once we remove those, there are no other missing values that exist in our dataset.
+
+### 4.3 Non-informative Features Exclusion
+
+We also removed column **Customer ID** from our dataset as it only serves as a counter column: each individual owns a unique customer ID as a identifier, which provides no information.
+
+
+
+```{r exclude_id}
+# remove CustomerId featuren column from the dataset
+churn <- churn[,2:21]
+```
+
+After the initial data processing, there are `r dim(churn)[1]` rows(customers records) and  `r dim(churn)[2]` columns (features) left.
+
+-----------------------
+
+## 5. Exploratory Data Analysis 
+
+After the Initial Data Processing, the dataset is sufficiently cleaned and well structured. Then it is a good practice to understand the data first and try to gather as many insights from it. This **EDA** (Exploratory Data Analysis) section focused on discovering target(Churn) patterns, detecting related features, exploring correlations, and handling imbalanced dataset, with the help of summary tables and graphical representations.
+
+
+### 5.1 Churn Rate Exploration
+
+First, it's always a good starting point to explore the characteristic of customers who tends to churn. The churn rate, is most commonly used as the percentage of service subscribers who discontinue their subscriptions within a given time period. 
+
+
+Churn rate is an important factor in the telecommunications industry. They need to understand who is leaving and why. Thus, we created visualizations of the categorical variables against churn through churn rate, to get a initial glimpse of possible important features. 
+ 
+
+```{r churn_rate_exploration, fig.height=10,fig.width=10,fig.align="center"}
+myplots <- list()  
+m<-1
+# get column names
+col.name<-colnames(churn)
+ # plot the bar chart for all columns grouped by Churn
+for(i in 1:ncol(churn)){
+  df.by.churn <- ddply(churn,.(get(col.name[i])), function(x) 
+    with(x,data.frame(100*round(table(Churn)/length(Churn),4))))
+  df.by.churn<-as.data.table(df.by.churn)
+  df.by.churn<-df.by.churn[Churn=="Yes",]
+    # bar chart for categorical variables
+  if (churn[,class(get(col.name[i]))] == "factor"){
+    myplots[[m]] <- eval(substitute(ggplot(data=df.by.churn,aes(x=get(names(df.by.churn[,1])), y=Freq, fill=Churn)) + geom_bar(stat="identity", color="black",fill="lightblue") + ylim(0,100) + theme(axis.text=element_text(size=8),axis.title=element_text(size=8),plot.title=element_text(size=8),plot.margin = unit(c(0, 0, 0, 0), "cm"), axis.text.y = element_text(angle=30,hjust=1))  + labs(title=eval(col.name[i]),y="Churn Rate(%)", x="") + geom_text(aes(y=Freq, label=paste0(Freq,"%")), hjust=-0.2, color="black", size=3.0) + coord_flip(), list(i = i)))
+    m <- m+1
+  }
+  
+}
+
+plot_grid(plotlist = myplots, nrow = 4, ncol =4 )
+```
+
+According to churn rate shown on the bar chart above, it is observed that customers who churn tend to:   
+- be a SeniorCitizen (41.68%)  
+- use fiber optic internet service (41.89%)  
+- have a month-to-month contract (42.71%)  
+- use electronic check as a payment method (45.29%) 
+
+As for customers with internet service, customers with no online security, no online backup, no device protection and no technical support also churn more, which goes in line with our pre exploratory analysis. Having streaming TV or streaming movies features for customers with internet service do not seem to impact whether or not customers will churn.
+
+Thus, it is concluded in the initial exploration that features SeniorCitizen, OnlineSecurity, TechSupport, Contract, and PaymentMathod are probably more significant when determining whether a customer churn or not. These initial guess would be compared with the importance results from our best model later in Section 8.
+
+
+
+### 5.2 Phone Service Exploration
+
+In the churn-rate visulizations, it is observed that **PhoneService** and **MultipleLines** features are interrelated. **MultipleLines** have three class levels - yes, no, and no phone service. **PhoneService** has two class levels - yes and no. Since they both expressing the information of having phone service or not, we realize that these two features might provide duplicated information.
+
+In order to explore the relationship between the two features, the percentage of each level of PhoneService was shown based on the levels of MultipleLines below. 		In order to explore the relationship between these two features, the percentage of each level of PhoneService was shown based on the levels of MultipleLines below. 
+
+
+```{r phone_service, fig.height=3.8,fig.width=5,fig.align='center'}
+#MultipleLines
+ggplot(churn, aes(churn[,MultipleLines],fill=PhoneService))+geom_bar(position='fill')+labs(title = "MultipleLines")+xlab("")+ylab("percentage")+theme(axis.text.x=element_text(angle=30,hjust=1))
+```
+
+It was observed that MultipleLines would always be "No phone service" if the PhoneService is "No" while MultipleLines would be "Yes" or "No" if PhoneService is "Yes". This indicates that the choices of whether customers have MultipleLines is totally based on the choice of whether customers have PhoneService or not. 
+
+Since PhoneService provided the duplicated information as Multiplelines, the feature **PhoneService** was dropped from the dataset, to avoid the high correlation between them.
+
+```{r drop_PhoneService}
+# drop PhoneService column
+churn[,PhoneService:=NULL]
+```
+
+
+
+### 5.3 Internet Service Exploration
+
+
+Similary as the PhoneService variable, it is observed that **InternetService** are interrelated with other six features, which are: "online security", "online backup", "device protection", "tech support", "streaming TV", and "streaming movies". **InternetService** has three levels, which includes DSL, fiber optic, and No. Other six features all have three levels, which includes Yes, No and No internet service. They all have a factor level indicating whether or not customers have internet service. 
+
+In order to explore the relationship between the InternetService variable and other six features, the percentage of each level of InternetService was shown based on the levels of other six features below. 
+
+```{r internet_service, fig.align="center"}
+myplots3 <- list() 
+
+m<-1
+# get column names
+col.name2<-c("OnlineSecurity", "OnlineBackup", "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies")
+# plot the bar chart for all columns grouped by Churn
+for(i in 1:length(col.name2)){
+  myplots3[[m]]<-eval(substitute(ggplot(churn, aes(churn[,get(col.name2[i])],fill=InternetService))+geom_bar(position='fill')+labs(title = col.name2[i], x="")+theme(axis.text=element_text(size=8),axis.title=element_text(size=8),plot.title=element_text(size=8),plot.margin = unit(c(0.1, 0.1, 0.1, 0.1), "cm"),axis.text.x=element_text(angle=30,hjust=1), legend.title = element_text(size=12),legend.text = element_text(size=10)),list(i = i)))
+  m <- m+1
+}
+#plot_grid(plotlist = myplots3, nrow = 2, ncol = 3)
+library(ggpubr)
+ggarrange(plotlist = myplots3, ncol=3, nrow=2, common.legend = TRUE, legend="left")
+
+```
+
+It was observed that the level of these six features would always be "No internet service" if the InternetService is "No", but different from the "PhoneService", the other remaining levels are not determined by the InternetService.  If users do not have internet service; then, there are no ways that users will be able to get exposed to these aforementioned features; hence, we double checked to make sure that the no internet service level of these features all have the same numbers as customers with no internet service. 
+
+Even though there was somewhat duplicated information provided by InternetService and related six features, we decided to leave the levels as it is because they all provide additional information about customers' decision to churn besides whether or not they have internet service. If we dropped the InternetService feature, the information based on other two internet service type - DSL and Fiber optic - are lost. If we dropped the six features, the information based on which services customer deem important will be lost. 
+
+Thus, no further actions were performed on these features, so that they could provide information on which services offered to customers with internet service are significant to customers, directing marketing and sales team to focus their efforts appropriately.
+
+
+### 5.4 Correlation Matrix
+
+After churn-rate visualizations and duplicated information handling, a correlation matrix was plotted to check the analysis above as a diagnostic, and check the correlation between features to see patterns.
+
+In the correlation plot below, positive correlations are displayed in green color and negative correlations in purple color. Color intensity and the size of the square are proportional to the correlation coefficients. Only the lower triangular of the correlation matrix was displayed here.
+
+
+
+```{r correlation, warning=FALSE,fig.align="center"}
+# encoding all factor columns as numeric values
+factor.col.name<-col.name[churn[,lapply(X=.SD,FUN="class")]=='factor']
+churn_encoded<-copy(churn)
+churn_encoded<-churn_encoded[,eval(factor.col.name):=lapply(X=.SD,FUN=function(x){as.numeric(x)-1}),.SD=factor.col.name]
+# correlation plots
+corrplot(cor(churn_encoded),method='square', type="lower",diag=F, col = colorRampPalette(c("purple", "lightgreen"))(200), tl.col = "black",tl.cex = 0.8,tl.srt=10)
+
+```
+
+The correlation matrix confirms our analysis that **Tenure**, **Contract**, **OnlineSecurity**, **OnlineBackup**, **DeviceProtection**, and **TechSupport** are important features to include in our predictive model as these features show high correlation with **Churn**. (Note: the sign of correlation between categorical variables do not have any meaning here, as their levels are just encoded according to the occurrence order).
+
+As for the three continuous variables, we found out that **TotalCharges** has a very strong positive correlation with **MonthlyCharges** and **Tenure**. The relationship between three continuous variables would be explored in Section 5.5.
+
+
+### 5.5 Continuous Variables Exploration
+
+
+According to the analysis from the correlation matrix plot, there were high positive correlation between three continuous variables - "tenure", "MonthlyCharges", and "TotalCharges", thus we want to further explore the relationship between these three variables using scatterplots.
+
+```{r continuous_features, fig.height=5,fig.width=15}
+scatterplots <- list() 
+m<-1
+# iterrate for all pairs of continuous vars
+for (i in 1:length(continuous_col.names)){
+  for (j in (i+1):length(continuous_col.names)){
+    # scatterplot
+    scatterplots[[m]]<-eval(substitute(ggplot(data=churn, aes(x=get(continuous_col.names[i]), y=get(continuous_col.names[j]), color=2)) + geom_point(alpha=0.3) + labs(color="",y=eval(continuous_col.names[j]), x=eval(continuous_col.names[i])) + theme(legend.position="none"),list(i = i)))
+    m <- m+1
+  }
+}
+# combine subplots
+plot_grid(plotlist = scatterplots, nrow = 1, ncol = 3)
+ 
+```
+
+In the scatterplots above, there were obvious linear restrictions between these three variables, as their boundaries were always a linear line. As **tenure**  represents the number of months the customer has stayed with the company, the **MonthlyCharges**  represents the amount charged to the customer monthly, and **TotalCharges** represents the total amount charged to the customer.
+
+It's a good guess that `tenure*MonthlyCharges=TotalCharges`, thus we used a scatter plot to check the relationship between tenure\*MonthlyCharges and TotalCharges.
+
+```{r check_continuous_relationships, fig.height=4,fig.width=4,fig.align='center'}
+# get the product of tenure and MonthlyCharges
+continuous.dat <- churn[,.(tenure,MonthlyCharges,TotalCharges, "tenure*MonthlyCharges"=tenure*MonthlyCharges)]
+# use scatterplot to check for the relationship
+ggplot(data=churn, aes(x=tenure*MonthlyCharges, y=TotalCharges, color=2)) + geom_point(alpha=0.1,shape=1) + labs(color="",y="TotalCharges", x="tenure*MonthlyCharges") + theme(legend.position="none") + geom_abline(intercept = 0, slope = 1,color="red", size=0.38)
+```
+
+Through the scatterplot above, it suggests that there is a linear relationship between "tenure*MonthlyCharges" and "TotalCharges". Since TotalCharges provide duplicate information, the "TotalCharges" feature was dropped here.
+
+```{r drop_TotalCharges}
+# drop TotalCharges column
+churn[,TotalCharges:=NULL]
+```
+
+
+### 5.6 Imbalanced Dataset
+
+
+Before we create any predictive modeling, we took a final look on the dependent variable, **Churn**, by creating a visualization to see the percentage of customers who churn and do not churn in the dataset.   
+
+```{r handle_imbalanced_dataset, fig.height=5, fig.width=10, warning=FALSE}
+# BEFORE
+# plot the bar chart for churn
+churn.tab <- percentage.table(x = churn[, get(Churn.name)], 2) 
+churn.table<-as.data.table(churn.tab)
+# barplot
+before_plot<-ggplot(churn.table,aes(x=unlist(churn.table[, 1]),y=unlist(churn.table[,2]))) + 
+  geom_bar(stat="identity",color="black",fill="lightblue") + 
+  labs(title="Before Sampling" , x=eval(Churn.name),y="percentage(%)") + 
+  geom_text(aes(label=paste0(unlist(churn.table[,2]),"%"),y=unlist(churn.table[,2])+3.8), size=4)
+
+#AFTER
+churn.mod <- ovun.sample(Churn ~ ., data = churn, method = "over",N = 5174*2)$data
+# after oversampling
+churn.mod.tab <- table(churn.mod$Churn)/dim(churn.mod)[1]
+# barplot
+after_plot <- ggplot(churn.table,aes(x=c("No","Yes"),y=100*unlist(churn.mod.tab))) + 
+  geom_bar(stat="identity",color="black",fill="lightblue") + 
+  labs(title="After Sampling" , x=eval(Churn.name),y="percentage(%)") + 
+  geom_text(aes(label=paste0(round.numerics(100*unlist(churn.mod.tab),2),"%"),y=100*unlist(churn.mod.tab)+3.8), size=4)
+
+plot_grid(before_plot,after_plot)
+```
+
+We found out that **Churn** is highly imbalanced because nearly 73% of the dataset contains customers who do not churn, and 27% of customers who churn. The number of "No" class is neanly three times the number of "Yes" class, indicating the dataset is imbalanced.
+
+For this reason, we decided to perform the last preparation step to solve this issue by using `ovun.sample()` function from `ROSE` package. Through this function, we were able to create a balanced sample by random over-sampling of customers who churn and under-sampling of customers who do not churn, generating a balanced observation of roughly 50% for both customers who churn and do not churn. 
+
+Besides oversampling the dataset, other performance metrics like "confusion matrix", "precision", "recall", "auc-roc" would be combined with "accuracy" when evaluating the performance of the model.
+
+After the Exploratory Data Analysis, there are `r dim(churn)[1]` rows(customers records) and  `r dim(churn)[2]` columns (features) left.
+
+------------------------------
+
+
+## 6. Clustering - Customer Segmentation
+
+
+After the exploration stage, the team felt clustering techniques could potentially provide important insights into our dataset. Hence, two clustering models - K-means clustering and Model-based clustering - were developed with a goal of getting additional information that can be added into the final model. It is believed that clustering will help us better understand how different customer segments tend to behave, allowing us to identify the behaviors or characteristics of customers that churn before creating any predictive model. 
+
+
+
+```{r clustring_for_new_feature, message=FALSE, fig.height=5, fig.width=10}
+# encoding all factor columns as numeric values to find kmeans 
+churn.mod <- as.data.table(churn.mod)
+factor.col.name<-col.name[churn.mod[,lapply(X=.SD,FUN="class")]=='factor']
+churn_encoded<-copy(churn.mod)
+churn_encoded<-churn_encoded[,eval(factor.col.name):=lapply(X=.SD,FUN=function(x){as.numeric(x)-1}),.SD=factor.col.name]
+
+#Total within sum of squares plot suggests 3 as the best cluster 
+within_ss = sapply(1:10,FUN = function(x) kmeans(x = churn_encoded,centers = x,iter.max = 1000,nstart = 25)$tot.withinss)
+kmeans_plot<-ggplot(data=data.frame(cluster = 1:10,within_ss),aes(x=cluster,y=within_ss))+
+  geom_line(col='steelblue',size=1.2)+
+  geom_point()+
+  scale_x_continuous(breaks=seq(1,10,1)) + labs(title="K-Means: Elbow Curve")
+
+#Mclust suggests 3 as the best cluster 
+library(mclust)
+# get the bic vs cluster curve , find the elbow point
+mclust_bic = -sapply(1:10,FUN = function(x) Mclust(churn[,1:18],G=x)$bic)
+# the elbow curve
+mclust_plot<-ggplot(data=data.frame(cluster = 1:10,bic = mclust_bic),aes(x=cluster,y=bic))+geom_line(col='steelblue',size=1.2) + geom_point() + scale_x_continuous(breaks=seq(1,10,1)) + labs(title="Model-Based: Elbow Curve")
+
+plot_grid(kmeans_plot,mclust_plot)
+
+```
+
+We started off by transforming our churn dataset into numeric variable, naming the variable name **churn_encoded**. Afterwards, we created a plot utilizing K-means and Model-based clustering techniques to decide what our **centers** or **k** value should be. Based on the total within sum of squares plot and mclust(), the elbow method suggests that 3 is the optimal value for k. After finding the optimal value of k, we used `kmeans()` and `mclust()` function to generate clustering data that we can then utilized to add to our original churn dataset and evaluate the effectiveness of each method individually. 
+
+In order to express the clusters on a scatterplot, we flatten the data from 18 dimensions onto 2 by conducting a factor analysis with varimax rotation. This is done because it is not possible to visualize 18-dimensional data. In the graph below, factor2 represents our outcome variable, churn, while factor1 represent the groups of predictors in our dataset. 
+
+```{r clustering_visualiz, fig.height=4.6,fig.width=10}
+#Kmeans
+km = kmeans(x = churn_encoded,centers = 3,iter.max=10000,nstart=100)
+library(flexclust)
+km_kcca = as.kcca(km,churn_encoded) # flexclust uses objects of the classes kcca
+churn_cluster = predict(km_kcca)
+library(psych)
+temp = data.frame(cluster = factor(churn_cluster),
+           factor1 = fa(churn_encoded[,1:18],nfactors = 2,rotate = 'varimax')$scores[,1],
+           factor2 = fa(churn_encoded[,1:18],nfactors = 2,rotate = 'varimax')$scores[,2])
+kmeans_cluster<-ggplot(temp,aes(x=factor1,y=factor2,col=cluster)) + geom_point() + labs(title="K-Means: Clustering Assignments")
+#table(churn_cluster) #looking at distribution 
+
+#Mclust 
+m_clusters = Mclust(data = churn.mod[,1:18],G = 3)
+m_segments = m_clusters$classification
+library(psych)
+temp = data.frame(cluster = factor(m_segments),
+           factor1 = fa(churn_encoded[,1:18],nfactors = 2,rotate = 'varimax')$scores[,1],
+           factor2 = fa(churn_encoded[,1:18],nfactors = 2,rotate = 'varimax')$scores[,2])
+mclust_cluster<-ggplot(temp,aes(x=factor1,y=factor2,col=cluster)) + geom_point() + labs(title="Model-Based: Clustering Assignments")
+#table(m_segments) #looking at distribution 
+
+plot_grid(kmeans_cluster,mclust_cluster)
+
+
+```
+
+The scatterplots above suggested that K-means clustering does a better job at differentiating customer segments than Model-based clustering, with more explicit boundaries between clusters. It is a good knowledge to have before we add the two clusters back to the original dataset and begin the evaluation process.
+
+
+```{r add_clusters_into_dataset}
+# add the cluster assignments as a new feature into our dataset
+churn.mod[,"Cluster_Msegments":=m_segments]
+churn.mod[,"Cluster_Kmeans" :=churn_cluster]
+
+#evaluation of kmeans cluster 
+kmeans_eval<-churn.mod[,lapply(.SD, mean), by="Cluster_Kmeans", .SDcols = c("MonthlyCharges", "tenure")][order(Cluster_Kmeans)]
+# contract
+kmeans_churn <- churn.mod[Churn=="Yes", .("ChurnRate" = .N/churn[,.N]), by = Cluster_Kmeans]
+# merge
+kmeans_merge<-merge(kmeans_eval,kmeans_churn)
+datatable(kmeans_merge[,lapply(X=.SD, FUN="round.numerics",digits = 2)],rownames = FALSE)
+
+
+#evaluation of Mclust clusters
+mclust_eval<-churn.mod[,lapply(.SD, mean), by="Cluster_Msegments", .SDcols = c("MonthlyCharges", "tenure")][order(Cluster_Msegments)]
+# contract
+mclust_churn<-churn.mod[Churn=="Yes", .("ChurnRate" = .N/churn[,.N]), by = Cluster_Msegments]
+# merge
+mclust_merge<-merge(mclust_eval,mclust_churn)
+datatable(mclust_merge[,lapply(X=.SD, FUN="round.numerics",digits = 2)],rownames = FALSE)
+
+```
+
+According to the preliminary data analysis and exploratory analysis, we know that **tenure** and **MonthlyCharges** are important indicators to customers' churn, so we use these two variables  as well as **churn rate** for the clustering method evaluation. Comparing the two tables, clusters from K-Means provide more valuable information than what was provided in Model-based.
+
+After the evaluation of both methods, we found out that the segmentation provided from `kmeans()` suits our dataset better and was able to provide a much better insights into our dataset compared to `mclust()` function. Cluster results from k_Means clustering corresponds well with our preliminary data analysis and exploratory analysis that customers who tend to churn have high monthly charge, and with low tenure months with the company, which also made sense intuitionally.
+
+```{r drop_mclust}
+# drop Mcluster column
+churn.mod[,Cluster_Msegments:=NULL]
+```
+
+
+Per K-means clustering, cluster 3 resembles this information very well as the model groups customers who has high monthly charges, and with low tenure around 12 months. Cluster 2 groups customer with low monthly charges with lower than average tenure months. Cluster 1 groups customers who has very high average monthly charges, with long tenure months. 
+
+Model-based clustering, on the other hand, has less obvious cutoffs in grouping, especially in the tenure variable. For this reason, we decided to go ahead and use K-Means result in our dataset, dropping the result we receive from `mclust()`. 
+
+After the Customer Segmentation, there are `r dim(churn)[1]` rows(customers records) and  `r dim(churn)[2]` columns (features) left.
+
+------------------------------
+
+## 7. MODELING
+
+After the Exploratory Data Analysis and Data Processing, with well-structured dataset on-hand, the team created and evaluated four different machine learning models. The objective of building machine learning models is to predict **Churn** based on customers' information. In addition, the model will help sales and marketing team identify which features customers deem important so that they can create and improve the loyalty programs appropriately. 
+
+
+The four machine learning models chosen are: (1) **Logistic Regression**, (2) **Random Forest**, (3) **Support Vector Machines**, and (4) **xgBoost**. The performance of each model was evaluated with various criterias including accuracy, precision, recall, f1-score, auc, confusion-matrix, and ROC curve. The overall goal is to get a classification model with maximum accuracy. However, as the original dataset was imbalanced, all evaluation metrics are taken into consideration before we select the final model. 
+
+
+Prior to modeling, we split the dataset into train and test, with train having 70% of the observations and test having 30% of the observations from churn dataset, with the goal to test each model against test dataset to ensure that we have a good representation of the model performance without overfitting to the train dataset.
+ 
+
+
+```{r train_test_split}
+input.names <- names(churn.mod)[!(names(churn.mod) %in% "Churn")]
+# train-test split
+indexes <- sample(1:nrow(churn.mod), size=0.3*nrow(churn.mod))
+test <- churn.mod[indexes,]
+train <- churn.mod[-indexes,]
+# trainx,trainy,testx,testy
+trainx <- train[,c(1:17,19)]
+trainy <- train$Churn
+testx <- test[,c(1:17,19)]
+testy <- test$Churn
+```
+
+```{r function, echo=FALSE}
+misclassification.train.rate <- function(model){
+  predict <- model$pred[,1]
+  misclassify <- mean(as.numeric(predict))-1
+  return (misclassify)
+}
+misclassification.test.rate <- function(model){
+  predicted.test <- predict(model, testx)
+  return (mean(as.vector(predicted.test)!=testy))
+}
+```
+
+
+### 7.1 Model: Logistic Regression
+
+**Logistic Regression** is the first model our group utilized to create prediction. Logistic regression is a popular regression analysis used to create classification when dependent variable is binary. Our team used `glm` function from `base` package to generate logistic model and since we have one dependent variable with two levels yes and no, which is **Churn**, we set family to **binomial**.
+ 
+```{r glm, warning=FALSE, fig.height=4, fig.width=4,fig.align="center"}
+# logistic regression
+library(caret)
+# build model
+glm.model <- glm(Churn~., data=train, family=binomial)
+# predict
+glm.pred <- predict(glm.model,type='response', newdata = test)
+glm.pred <-ifelse(glm.pred > 0.5, "Yes", "No")
+# confusionMatrix
+glm.confusion<-confusionMatrix(factor(glm.pred),factor(testy))$table
+# accuracy
+accuracy.lr <- sum(glm.confusion[1,1],glm.confusion[2,2])/nrow(test)*100 
+
+# plot confusion matrix as a heatmap
+confusion.matrix.heatmap(glm.confusion, accuracy.lr)
+
+# plot roc curve
+auc.lr=roc_plot(glm.pred)
+
+# summary table
+lr.summary <- data.table(Model="LogisticRegression", Accuracy=accuracy.lr,
+           Precision=100*precision(glm.confusion), Recall=100*recall(glm.confusion),
+           Fscore=100*F_meas(glm.confusion),AUC=100*auc.lr)
+lr.summary <- lr.summary[,lapply(X=.SD, FUN="round.numerics.percent",digits = 2)]
+datatable(lr.summary, rownames = FALSE)
+
+```
+
+
+
+Through logistic regression method, we were able to get an accuracy rate of only `r round.numerics.percent(accuracy.lr,2)`. We also use confusion matrix and AUC-ROC curve as performance measurement for all our models in addition to accuracy rate. AUC-ROC curve is "a performance measurement for classification problem where ROC is a probability curve and AUC represent degree of measure of separability. It tells how much model is capable of distinguishing between classes. Higher the AUC, the better the model." (Narkhede, 2018). In other words, we want to make sure that our model is capable of predicting customers who churn and do not churn correctly and accurately. Through logistic regression, we are able to get our AUC value of `r round.numerics.percent(100*auc.lr,2)` and accuracy `r round.numerics.percent(accuracy.lr,2)`, which serves as a baseline for our future predictive models. 
+
+
+
+### 7.2 Model: RandomForest 
+
+The second model to predict customer churn is **Random Forest**. Random forest is a popular ensemble method that can be used to build predictive models for both classification and regression problems. Random forest is known to perform better than decision trees because it avoids overfitting by using bagging techniques to build trees from bootstrap samples and merges them together to get a more accurate and stable prediction. Normally, even without hyper-parameter tuning, random forest is known to provide good result. 
+
+```{r random forest, message=FALSE,warning=FALSE,fig.height=4, fig.width=4,fig.align="center"}
+library("randomForest")
+# random forest
+rf.model <- randomForest(Churn ~., data = train)
+rf.pred <- predict(rf.model, test)
+
+new.rfModel<- randomForest(Churn ~., data = train, ntree = 100, mtry = 8, importance = TRUE, proximity = TRUE)
+#print(new.rfModel) #OOB accuracy 89.12%
+pred.rfnew.model <- predict(new.rfModel, testx)
+
+# confusionMatrix
+rf.confusion <- confusionMatrix(factor(pred.rfnew.model),factor(testy))$table
+
+# accuracy
+accuracy.rf <- sum(rf.confusion[1,1],rf.confusion[2,2])/nrow(test)*100 
+
+# plot confusion matrix as a heatmap
+confusion.matrix.heatmap(rf.confusion, accuracy.rf)
+
+# plot roc curve
+auc.rf = roc_plot(pred.rfnew.model)
+
+# summary table
+rf.summary <- data.table(Model="RandomForest", Accuracy=accuracy.rf,
+           Precision=100*precision(rf.confusion), Recall=100*recall(rf.confusion),
+           Fscore=100*F_meas(rf.confusion),AUC=100*auc.rf)
+rf.summary <- rf.summary[,lapply(X=.SD, FUN="round.numerics.percent",digits = 2)]
+datatable(rf.summary, rownames = FALSE)
+
+```
+
+We test this out by utilizing `randomForest()` function from `randomForest` package, and by applying the function to our train dataset, we were able to get accuracy rate of `r round.numerics.percent(accuracy.rf,2)`, which already performs better that what we were able to achieve from logistic regression model. To get a better result, we tried tuning the parameters using `plot(rf.model)` to help us determine the number of trees. As the number of trees increases, the out-of-bag error rate decreases, and then becomes almost constant. We were not able to decrease the out-of-bag error rate after about 100, so we chose `ntree` as 100. Then, we used `tuneRF` function from randomForest to find the optimal `mtry`. Since out-of-bag error rate was lowest at 8 for mtry, we decided to set our final model mtry as 8. After tuning these two parameters, we were able to increase the accuracy of our model to `r round.numerics.percent(accuracy.rf,2)` and AUC of `r round.numerics.percent(100*auc.rf,2)`. 
+
+
+### 7.3 Model: Support Vector Machine
+
+The third model was **Support Vector Machine**. Support Vector Machines is a supervised learning models that constructs a hyperplane in a high-dimensional space for classification. We used `svm()` function from `e1071` package to build our model.  
+
+
+```{r svm,fig.height=4, fig.width=4,fig.align="center"}
+library(caret)
+
+# define training control
+train_control<- trainControl(method="cv", number=5, savePredictions = TRUE)
+
+# train the model 
+svm.mod.radial.cv <- train(Churn~., data=train, trControl=train_control, method="svmRadial")
+# predict
+svm.pred <- predict(svm.mod.radial.cv, testx)
+
+# confusionMatrix
+svm.confusion <- confusionMatrix(svm.pred,testy)$table
+
+# accuracy
+accuracy.svm <- sum(svm.confusion[1,1],svm.confusion[2,2])/nrow(test)*100 
+
+# plot confusion matrix as a heatmap
+confusion.matrix.heatmap(svm.confusion, accuracy.svm)
+
+# plot roc curve
+auc.svm = roc_plot(svm.pred)
+
+# summary table
+svm.summary <- data.table(Model="SupportVectorMachine", Accuracy=accuracy.svm,
+           Precision=100*precision(svm.confusion), Recall=100*recall(svm.confusion),
+           Fscore=100*F_meas(svm.confusion), AUC=100*auc.svm)
+svm.summary <- svm.summary[,lapply(X=.SD, FUN="round.numerics.percent",digits = 2)]
+datatable(svm.summary, rownames = FALSE)
+
+```
+
+Upon building the model, we tried out several kernel functions: linear, polynomial, and radial. By using a default parameter to build the model, we were able to get the highest accuracy for radial kernel, with accuracy of `r round.numerics.percent(accuracy.svm,2)` and AUC of `r round.numerics.percent(100*auc.svm,2)`, which was much lower than what we were able to achieve with randomForest. 
+
+### 7.4 Model: xgBoost
+
+Last but not least, we built our fourth model utilizing `XGBoost` model from gradient boosting techniques. Gradient boosting is an ensemble model that improve the performance of weak models. Gradient boosted machines are an extremely popular machine learning algorithm that have proven successful across many domains. Whereas random forests build an ensemble of deep independent trees, GBMs build an ensemble of shallow and weak successive trees with each tree learning and improving on the previous. When combined, these many weak successive trees produce a powerful "committee" that are often hard to beat with other algorithms. 
+
+
+```{r xgboost,fig.height=4, fig.width=4, fig.align="center"}
+library(xgboost)
+
+churn.num <- data.table(churn.mod)
+
+# change the class of columns from char to numeric
+churn.num[,eval(factor.col.name):=lapply(X=.SD,FUN=function(x){as.numeric(x)-1}),.SD=factor.col.name]
+
+train_num <- churn.num[-indexes,]
+test_num <- churn.num[indexes,]
+
+xgtrain <- xgb.DMatrix(data = as.matrix(train_num[,c(1:17,19)]),label = train_num$Churn) 
+xgtest <- xgb.DMatrix(data = as.matrix(test_num[,c(1:17,19)]),label = test_num$Churn) 
+
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+
+xgbcv <- xgb.cv(params = params, data = xgtrain, nrounds = 100, nfold = 5, showsd = T, stratified = T, print_every_n = 10, early_stopping_rounds = 20, maximize = F, verbose = F)
+
+xgb <- xgb.train(params = params, data = xgtrain, nrounds = xgbcv$best_iteration, watchlist = list(val=xgtest,train=xgtrain), verbose = F, eval_metric = "error")
+
+#predict
+xgb.pred <- predict (xgb,xgtest)
+xgb.pred <- ifelse (xgb.pred > 0.5, "Yes", "No")
+
+# confusionMatrix
+xgb.confusion <- confusionMatrix(factor(xgb.pred),factor(testy))$table
+
+# accuracy
+accuracy.xgb <- sum(xgb.confusion[1,1],xgb.confusion[2,2])/nrow(test)*100 
+
+# plot confusion matrix as a heatmap
+confusion.matrix.heatmap(xgb.confusion, accuracy.xgb)
+
+# plot roc curve
+auc.xgb <- roc_plot(xgb.pred)
+
+# summary table
+xgb.summary <- data.table(Model="xgBoost", Accuracy=accuracy.xgb,
+           Precision=100*precision(xgb.confusion), Recall=100*recall(xgb.confusion),
+           Fscore=100*F_meas(xgb.confusion), AUC=100*auc.xgb)
+xgb.summary <- xgb.summary[,lapply(X=.SD, FUN="round.numerics.percent",digits = 2)]
+datatable(xgb.summary, rownames = FALSE)
+
+# feature importance
+important.features <- xgb.importance(feature_names=colnames(xgtrain), model = xgb)
+#xgb.plot.importance (importance_matrix = important.features)
+```
+
+Before training the model, the training set and testing set were transformed as matrices, as the model only accepts matrix as inputs. To improve the accuracy of XGBoost, we tuned our model on parameter "nrounds". And with the tuned nrounds=`r xgbcv$best_iteration`, we were able to achieve an accuracy of `r round.numerics.percent(accuracy.xgb,2)` and AUC of `r round.numerics.percent(100*auc.xgb,2)`. 
+
+
+### 7.5 Four Model Comparison
+
+After the evaluation of all the four models, their performance results are summarized together for comparison. The summary table was set in decreasing order on accuracy.
+
+
+```{r model_comparison, echo=FALSE}
+# combine all model summary 
+model.summary <- rbind(lr.summary, rf.summary, svm.summary, xgb.summary)
+# order the table on Accuracy in decreasing order
+setorder(model.summary, -Accuracy)
+datatable(model.summary, rownames = FALSE)
+```
+
+All in all, through the summary table above, **RandomForest** performed the best in all the performance metrics, with accuracy as `r round.numerics.percent(accuracy.rf,2)` and AUC as.`r round.numerics.percent(100*auc.rf,2)`.
+
+------------------------------
+
+## 8. Final Model
+
+To further improve our accuracy, we explored the dataset using `importance()` and `varImpPlot()` function to find out which variables are significant to our model and which variables can be removed from our current best model.
+
+```{r inporatnce_feature, fig.height=5, fig.width=5, fig.align="center"}
+# Check Importance
+rf.importance.tab <- as.data.frame(importance(new.rfModel))
+rf.importance.tab <- setDT(rf.importance.tab, keep.rownames = TRUE)[]
+# plot the importance bar chart
+ggplot(rf.importance.tab,aes(x=reorder(rn,MeanDecreaseGini) ,y=MeanDecreaseGini)) +
+  geom_bar(stat="identity",color="black",fill="lightblue") + labs(title="Importance of features" , x="",y="MeanDecreaseGini") + coord_flip()
+```
+
+In the Importance plot above, the criteria "MeanDecreaseGini" was used to measure the importance of each feature. The top 6 features are: **MonthlyCharges, tenure, Contract, OnlineSecurity, PaymentMethod, and TechSupport**, which agrees with the previous Exploratory Data Analysis Result in section 5.1. We suggest sales and marketing team to focus on these six features to reduce customers' churn rate.
+
+In addition, it shows that **StreamingTV**, **StreamingMovies**, and **DeviceProtection** are the three variables which provide lowest contribution to our model based on the `importance()` function, so we decided to create another model that delete these three variables to see if the model performance can be improved or not.
+
+
+```{r final_best_model,fig.height=4, fig.width=4, fig.align="center"}
+elimination.model <- randomForest(Churn~ gender+Partner +Dependents  +tenure+MultipleLines+InternetService+OnlineSecurity+OnlineBackup+DeviceProtection+TechSupport+Contract+PaperlessBilling+PaymentMethod+MonthlyCharges+Cluster_Kmeans,data=train, ntree = 100, mtry = 6, importance = TRUE, proximity = TRUE)
+
+pred.elimination.model <- predict(elimination.model, testx)
+
+# confusionMatrix
+rf.elimination.confusion <- confusionMatrix(factor(pred.elimination.model),factor(testy))$table
+
+# accuracy
+accuracy.rf.elimination <- sum(rf.elimination.confusion[1,1],rf.elimination.confusion[2,2])/nrow(test)*100 
+
+# plot confusion matrix as a heatmap
+confusion.matrix.heatmap(rf.elimination.confusion, accuracy.rf.elimination)
+
+# plot roc curve
+auc.rf.elimibation <- roc_plot(pred.elimination.model)
+
+# summary table
+rf.elimination.summary <- data.table(Model="RandomForest(drop cols)",
+                                     Accuracy=accuracy.rf.elimination,
+           Precision=100*precision(rf.elimination.confusion),
+           Recall=100*recall(rf.elimination.confusion),
+           Fscore=100*F_meas(rf.elimination.confusion),
+           AUC = 100*auc.rf.elimibation)
+rf.elimination.summary <- rf.elimination.summary[,lapply(X=.SD, FUN="round.numerics.percent",digits = 2)]
+
+
+```
+
+After dropping the three features, the accuracy of the updated random forest model is `r round.numerics.percent(accuracy.rf.elimination,2)` and AUC of `r round.numerics.percent(100*auc.rf.elimibation,2)`. It turned out that accuracy rate did improve by dropping the irrelevant features. We also tried to delete another insignificant variable such as SeniorCitizen but the accuracy decreased as well. 
+
+```{r final_model_summary}
+# combine all model summary 
+update.model.summary <- rbind(model.summary,rf.elimination.summary)
+setorder(update.model.summary, -Accuracy)
+datatable(update.model.summary, rownames = FALSE)
+```
+
+Hence, we decided to use the updated random forest model as our final model with variables including in the model as follows: gender, SeniorCitizen, Partner, Dependents, tenure, MultipleLines, InternetService, OnlineSecurity, OnlineBackup, TechSupport, Contract, PaperlessBilling, PaymentMethod, MonthlyCharges and Cluster_Msegments.
+
+
+------------------------------
+
+## 9. Recommendations 
+
+Given the implications of our final model, we recommend sales and marketing team to focus its effort on creating retention programs and marketing campaigns that will provide customer with the best possible service and incentives to stay with the company as long as possible. Our analysis suggests that customers who have more than a year contract with the company has less chance of churning to its competitors. 
+
+Based on our analysis, we also found that automatic payment reduction for monthly payment helps reduces customer churn. This is because these automatic reductions do not only provide customers with convenience, but allowed for recurring charges in customers' bank account, which decreases the chances of customers thinking about the monthly charges which then leads to less possibility for churn. 
+
+Lastly, it might be good for the marketing and sales team to develop a program that offers online security and technical support to those customers with internet service. It is clear that by having these two services, it will help the company reduces customers' churn rate. In spite of this, it is important for the marketing and sales team to utilize the tool we created to gain customer insights and build retention programs appropriately. 
+
+------------------------------
+
+## 10. Assumptions and Limitations 
+
+The major assumption for our group in the final analysis is that after data cleaning and data preparation steps, the model errors are uncorrelated and uniform, which serve as a good dataset to be used in our predictive modeling process.  
+
+In terms of limitations, the dataset does not have large observations and features that our group can analyze and choose from. The observations in this dataset is very small with only 7043 rows of data, meaning that we do not have a lot of observations to train the model with. If we have more observations, we believe that our model will perform better with higher accuracy. 
+
+In addition, the dataset for churn was imbalanced with more observations for non-churn than churn customers. However, due to the nature of the business, it is almost impossible for the telecommunication company to have a balanced dataset. In fact, the imbalanced dataset makes sense because it is very unlikely that a company will have equal numbers of churn and non-churn customers. Hence, we believe that utilizing under-sampling and over-sampling method to balance the dataset are the best option that we could do to ensure our data set is well balanced before analysis.  
+
+In terms of features, we wish we have more features in our dataset, such as date that customers joined or signed the contract with the company and whether or not customers have referred their friends or family members to the company in the past. By having limited numbers of features, our group has to include some features that do not seem to provide a lot of contribution to our final model such as SeniorCitizen and StreamingTV. This is because we do not have a lot of features to choose from, so even if these variables provide low contribution to our model accuracy, removing it will provide our model with less accuracy. 
+
+------------------------------
+
+## 11. Areas of Future Investigation 
+
+In addition to the analysis that our group already performed, it will be interesting to have additional features like date and months that customers join and leave the company as well as whether or not a customer has referred other customers to the company in the past. In terms of dates and months, the company will be able to gain some insight from times-series analysis to see which months customers tend to churn the most and which months customers tend to sign the contract with the company. Our group believe that this will provide interesting insights to the company and marketing team in terms of creating market campaigns to promote new customers into its platform. 
+
+An information about whether a customer has referred other customers to the company will also be interesting because it will provide some insight to the company on what types of demographics and needs these users usually have so that the company can create a target marketing campaigns to these user groups specifically. Similarly, it will be interesting to see which demographics tend to leave and come back to the company so we can create more incentive programs for this group or have an understanding on which features the company can change or improve going forward. 
+
+------------------------------
+
+## 12. Reference
+
+James, Gareth, Daniela Witten, Trevor Hastie, and Robert Tibshirani. *An Introduction to Statistical Learning: With Applications in R*. , 2013. Print.
+
+Narkhede, S. (2018, June 26). *Understanding AUC - ROC Curve.* https://towardsdatascience.com/understanding-auc-roc-curve-68b2303cc9c5. Assessed April 27, 2019
+
+*Using Customer Behavior Data to Improve Customer Retention.* IBM Analytics Communities, 11 Apr, 2015. https://www.ibm.com/communities/analytics/watson-analytics-blog/predictive-insights-in-the-telco-customer-churn-data-set/. Accessed 23 Apr. 2019.
+
+
+
+
+
+
+
